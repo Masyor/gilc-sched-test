@@ -32,8 +32,18 @@ def parse_days(days_str):
     return [days_map[d.strip()] for d in days_str.split('/') if d.strip() in days_map]
 
 st.title("Gilc Standby Scheduler (CP-SAT)")
-st.markdown("Paste your CSV data below. Format: `Days,Time,Teacher Name`")
 
+# Sidebar Settings Configuration Panel
+st.sidebar.header("🛠️ Schedule Configurations")
+max_staff_per_slot = st.sidebar.slider(
+    "Maximum Staff per Time Slot", 
+    min_value=1, 
+    max_value=10, 
+    value=3, 
+    help="Limits the maximum number of standby teachers assigned to any single 30-minute block."
+)
+
+st.markdown("Paste your CSV data below. Format: `Days,Time,Teacher Name`")
 csv_input = st.text_area("CSV Data", height=200, placeholder="Mon/Wed/Fri, 09:45-11:15, John Doe\nTue/Thu, 17:30-20:00, Jane Smith")
 
 if st.button("Generate Schedule"):
@@ -105,11 +115,14 @@ if st.button("Generate Schedule"):
                 else:
                     standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
                     
-    # 1. At least 1 teacher on standby every slot
+    # 1. Standby demand boundary conditions per slot
     for d in range(6):
         start_op, end_op = operating_hours[d]
         for s in range(start_op, end_op):
+            # Must have at least 1 person assigned
             model.Add(sum(standby[(t, d, s)] for t in teachers) >= 1)
+            # Cannot exceed user-configured maximum number of personnel
+            model.Add(sum(standby[(t, d, s)] for t in teachers) <= max_staff_per_slot)
             
     # 3. 1-Hour Consecutive Free Time (11:00 to 14:00 -> slots 22 to 28)
     for t in teachers:
@@ -169,7 +182,7 @@ if st.button("Generate Schedule"):
     model.Minimize(diff * 100 + total_transitions)
     
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 15.0
+    solver.parameters.max_time_in_seconds = 20.0
     status = solver.Solve(model)
     
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -197,26 +210,25 @@ if st.button("Generate Schedule"):
         # -------------------------------------------------------------
         st.markdown("---")
         st.subheader("🗓️ Master Weekly Standby Planner Grid")
-        st.info("Below is the complete weekly view organized by time slots and days.")
+        st.info(f"Below is the complete weekly view organized by time slots. (Max limit applied: {max_staff_per_slot} teachers per slot)")
 
         # Pivot to create a structure where Time is Rows and Days are Columns
         planner_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
         planner_pivot = planner_pivot.reindex(columns=days_order).fillna("")
 
-        # Create custom styled dataframe representation with interactive cell alignment
+        # Custom cell text coloration styles
         def format_planner_cells(val):
             if val.strip() == "" or val.strip() == "—":
                 return 'background-color: #f8f9fa; color: #cbd5e1; text-align: center; font-style: italic; border: 1px solid #e2e8f0;'
             return 'background-color: #f0fdf4; color: #166534; font-size: 13px; font-weight: 500; text-align: left; vertical-align: top; border: 1px solid #bbf7d0; padding: 6px;'
 
-        # Replace missing cells with standard empty dashes for clean visual alignment
         display_pivot = planner_pivot.copy()
         for col in display_pivot.columns:
             display_pivot[col] = display_pivot[col].apply(lambda x: "—" if not str(x).strip() else x)
 
-        # Render using the modern Pandas map functionality (satisfying pandas 2.0+)
+        # Render layout updating deprecated 'use_container_width' parameters to modern specifications
         styled_planner = display_pivot.style.map(format_planner_cells)
-        st.dataframe(styled_planner, use_container_width=True, height=750)
+        st.dataframe(styled_planner, width='stretch', height=750)
 
         # -------------------------------------------------------------
         # DATA METRICS BREAKDOWN & EXPORTS
@@ -234,10 +246,12 @@ if st.button("Generate Schedule"):
                 "Total Workload (hrs)": teach_hrs + sb_hrs
             })
         b_df = pd.DataFrame(breakdown).sort_values(by="Teacher")
-        st.dataframe(b_df, use_container_width=True, index=False)
+        
+        # Fixed crash by removing the invalid 'index=False' argument
+        st.dataframe(b_df, width='stretch')
         
         csv_file = res_df.to_csv(index=False)
         st.download_button(label="📥 Download Master Standby CSV File", data=csv_file, file_name="standby_schedule.csv", mime="text/csv")
         
     else:
-        st.error("No feasible schedule matching your rules could be found. Please check your data or constraint flexibility settings.")
+        st.error("No feasible schedule matching your rules could be found. Since max staff constraints were reduced, there might be a time slot where no one else is available to fill it. Try increasing the Maximum Staff slider in the sidebar.")
