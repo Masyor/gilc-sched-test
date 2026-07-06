@@ -28,21 +28,21 @@ def parse_days(days_str):
     }
     return [days_map[d.strip()] for d in days_str.split('/') if d.strip() in days_map]
 
-def generate_pastel_color(name_string):
-    """Generates a stable, sophisticated toned-down pastel color based on text content."""
-    if not name_string or name_string.strip() in ["", "—"]:
-        return "background-color: #f8f9fa; color: #cbd5e1; font-style: italic;"
+def get_teacher_styles(name):
+    """Generates an individual, unique, stable Tailwind-like style for each unique teacher name."""
+    if not name or name.strip() in ["", "—"]:
+        return "color: #94a3b8; font-style: italic;"
     
-    # Hash the text string to get a consistent unique color index
-    hash_digest = hashlib.md5(name_string.encode('utf-8')).hexdigest()
+    # Secure a consistent hue per unique name
+    hash_digest = hashlib.md5(name.encode('utf-8')).hexdigest()
     hue = int(hash_digest[:4], 16) % 360
     
-    # Using low saturation (35-45%) and high lightness (90-95%) ensures professional toned-down pastels
-    bg_color = f"hsl({hue}, 45%, 93%)"
-    text_color = f"hsl({hue}, 60%, 20%)"
-    border_color = f"hsl({hue}, 40%, 82%)"
+    # Styled like refined, professional Tailwind badges (low saturation, soft background)
+    bg = f"hsl({hue}, 60%, 95%)"
+    text = f"hsl({hue}, 70%, 25%)"
+    border = f"hsl({hue}, 50%, 85%)"
     
-    return f"background-color: {bg_color}; color: {text_color}; border: 1px solid {border_color}; font-weight: 500; font-size: 12px;"
+    return f"background-color: {bg}; color: {text}; border: 1px solid {border}; display: inline-block; padding: 2px 8px; margin: 2px 0; border-radius: 6px; font-weight: 500; font-size: 12px; width: 100%; box-sizing: border-box;"
 
 st.title("Gilc Standby Scheduler (CP-SAT)")
 
@@ -107,7 +107,7 @@ if st.button("Generate Schedule"):
         st.stop()
 
     teachers = df['Teacher'].unique().tolist()
-    min_standby_slots = int(min_standby_hours * 2) # Translate hours into 30m slots
+    min_standby_slots = int(min_standby_hours * 2)
 
     operating_hours = {
         0: (14, 40), 1: (16, 40), 2: (14, 40),
@@ -134,19 +134,16 @@ if st.button("Generate Schedule"):
                 else:
                     standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
                     
-    # Slot assignments ceilings and floors
     for d in range(6):
         start_op, end_op = operating_hours[d]
         for s in range(start_op, end_op):
             model.Add(sum(standby[(t, d, s)] for t in teachers) >= 1)
             model.Add(sum(standby[(t, d, s)] for t in teachers) <= max_staff_per_slot)
             
-    # Enforce minimum allocation per person
     for t in teachers:
         sb_sum_expr = sum(standby[(t, d, s)] for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1]))
         model.Add(sb_sum_expr >= min_standby_slots)
             
-    # 1-Hour Consecutive Free Time
     for t in teachers:
         for d in range(6):
             free_blocks = []
@@ -161,7 +158,6 @@ if st.button("Generate Schedule"):
             if free_blocks:
                 model.Add(sum(free_blocks) >= 1)
                 
-    # Total Effort Balancing
     total_teaching_slots = {t: sum(len(busy[t][d]) for d in range(6)) for t in teachers}
     total_workload = {}
     for t in teachers:
@@ -175,7 +171,6 @@ if st.button("Generate Schedule"):
         model.Add(max_workload >= total_workload[t])
         model.Add(min_workload <= total_workload[t])
         
-    # Fragment penalties
     transitions = []
     for t in teachers:
         for d in range(6):
@@ -214,32 +209,62 @@ if st.button("Generate Schedule"):
                 
         res_df = pd.DataFrame(res_data)
         days_order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-        # -------------------------------------------------------------
-        # THE VISUAL WEEK PLANNER MATRIX
-        # -------------------------------------------------------------
-        st.markdown("---")
-        st.subheader("🗓️ Master Weekly Standby Planner Grid")
         
         planner_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
         planner_pivot = planner_pivot.reindex(columns=days_order).fillna("")
 
-        display_pivot = planner_pivot.copy()
-        for col in display_pivot.columns:
-            display_pivot[col] = display_pivot[col].apply(lambda x: "—" if not str(x).strip() else x)
-
-        # Apply custom HSL dynamic pastel tone generator
-        styled_planner = display_pivot.style.map(generate_pastel_color)
-        st.dataframe(styled_planner, width='stretch', height=650)
+        # -------------------------------------------------------------
+        # TAILWIND CSS & INDIVIDUAL BADGE HTML GENERATOR 
+        # -------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("🗓️ Master Weekly Standby Planner Grid")
+        
+        html_output = """
+        <div id="printable-planner" style="font-family: ui-sans-serif, system-ui, sans-serif; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                <thead>
+                    <tr style="background-color: #0f172a; color: #f8fafc;">
+                        <th style="padding: 14px; font-weight: 600; border-bottom: 2px solid #334155; text-align: center; width: 12%;">Time</th>
+        """
+        for day in days_order:
+            html_output += f'<th style="padding: 14px; font-weight: 600; border-bottom: 2px solid #334155; text-align: center;">{day}</th>'
+        html_output += "</tr></thead><tbody>"
+        
+        row_alt = False
+        for time_slot, row in planner_pivot.iterrows():
+            bg_color = "#f1f5f9" if row_alt else "#ffffff"
+            row_alt = not row_alt
+            
+            html_output += f'<tr style="background-color: {bg_color}; border-bottom: 1px solid #e2e8f0; transition: background-color 0.15s ease;" onmouseover="this.style.backgroundColor=\'#f1f5f9\'" onmouseout="this.style.backgroundColor=\'{bg_color}\'">'
+            html_output += f'<td style="padding: 10px; font-weight: 600; color: #334155; text-align: center; background-color: #e2e8f0; border-right: 1px solid #cbd5e1; font-variant-numeric: tabular-nums;">{time_slot}</td>'
+            
+            for day in days_order:
+                cell_value = row[day]
+                html_output += '<td style="padding: 8px; vertical-align: top; min-width: 120px; border-right: 1px solid #e2e8f0;">'
+                
+                if not cell_value.strip():
+                    html_output += '<div style="color: #94a3b8; text-align: center; font-style: italic; padding-top: 4px;">—</div>'
+                else:
+                    # Break names and style each individual name dynamically by name hash
+                    individual_names = [n.strip() for n in cell_value.split(",") if n.strip()]
+                    for name in individual_names:
+                        style_rule = get_teacher_styles(name)
+                        html_output += f'<div style="{style_rule}">{name}</div>'
+                        
+                html_output += '</td>'
+            html_output += '</tr>'
+            
+        html_output += "</tbody></table></div>"
+        
+        # Render the custom beautifully formatted blueprint planner component
+        st.components.v1.html(html_output, height=650, scroller=True)
 
         # -------------------------------------------------------------
-        # DOWNLOADS & PRINT EXPORT EXTRAS
+        # EXPORTS AND ACTIONS
         # -------------------------------------------------------------
         col1, col2 = st.columns(2)
-        
         with col1:
-            # 1. Export the Pretty Grid itself as a human-readable Matrix CSV
-            pretty_csv = display_pivot.to_csv(index=True)
+            pretty_csv = planner_pivot.to_csv(index=True)
             st.download_button(
                 label="📥 Download Pretty Grid Planner (CSV)", 
                 data=pretty_csv, 
@@ -248,22 +273,26 @@ if st.button("Generate Schedule"):
             )
             
         with col2:
-            # 2. Browser print engine utility trigger to save as PDF or Print A4 layout
-            print_button_html = """
+            print_button_html = f"""
             <script>
-            function printPlanner() {
+            function printPlanner() {{
                 var printWindow = window.open('', '_blank');
-                var gridHtml = window.parent.document.querySelector('[data-testid="stDataFrame"]').outerHTML;
+                // Target layout structural container directly
+                var gridContent = window.parent.document.getElementById("printable-planner") || window.parent.document.querySelector('iframe').contentDocument.getElementById("printable-planner");
+                
+                var payloadHtml = gridContent ? gridContent.outerHTML : `{html_output}`;
+                
                 printWindow.document.write('<html><head><title>Print Standby Schedule</title>');
-                printWindow.document.write('<style>body{font-family:sans-serif;padding:20px;} table{width:100%;border-collapse:collapse;} th,td{border:1px solid #cbd5e1;padding:8px;text-align:left;font-size:12px;}</style>');
-                printWindow.document.write('</head><body><h2>Master Weekly Standby Planner Grid</h2>');
-                printWindow.document.write(gridHtml);
-                printWindow.document.write('<script>window.onload = function() { window.print(); window.close(); }</sc' + 'ript></body></html>');
+                printWindow.document.write('<style>@page {{ size: A4 landscape; margin: 10mm; }} body{{font-family:system-ui,sans-serif; margin:0; padding:0;}} table{{width:100%; border-collapse:collapse;}} th,td{{padding:6px !important; border:1px solid #cbd5e1 !important;}} div{{box-shadow:none !important; border-radius:0 !important;}}</style>');
+                printWindow.document.write('</head><body>');
+                printWindow.document.write('<h2 style="color:#0f172a; margin-bottom:12px;">Master Weekly Standby Planner Grid</h2>');
+                printWindow.document.write(payloadHtml);
+                printWindow.document.write('<script>window.onload = function() {{ setTimeout(function() {{ window.print(); window.close(); }}, 300); }}</sc' + 'ript></body></html>');
                 printWindow.document.close();
-            }
+            }}
             </script>
-            <button onclick="printPlanner()" style="width:100%; padding: 0.5rem; background-color: #1E3A8A; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
-                🖨️ Open Layout for A4 Print / PDF Save
+            <button onclick="printPlanner()" style="width:100%; padding: 0.5rem; background-color: #0f172a; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-family: sans-serif; transition: background 0.2s;">
+                🖨️ Save A4 Landscape PDF / Print
             </button>
             """
             st.components.v1.html(print_button_html, height=50)
@@ -290,4 +319,4 @@ if st.button("Generate Schedule"):
         st.dataframe(b_df, width='stretch')
         
     else:
-        st.error("No feasible schedule found. Increasing minimum standby requirements or lowering maximum staffing numbers can sometimes make a timetable mathematically impossible to solve. Try relaxing your parameters in the sidebar and regenerating.")
+        st.error("No feasible schedule found. Try relaxing your sidebar minimum standby constraint parameters.")
