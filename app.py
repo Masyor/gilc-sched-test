@@ -152,10 +152,9 @@ if st.button("Generate Schedule"):
         model.Add(max_workload >= total_workload[t])
         model.Add(min_workload <= total_workload[t])
         
-    # We want to minimize (max_workload - min_workload)
+    # Minimize (max_workload - min_workload)
     
     # 5. Penalize fragmented shifts
-    # Work W[s] = 1 if teaching or on standby
     transitions = []
     for t in teachers:
         for d in range(6):
@@ -165,22 +164,18 @@ if st.button("Generate Schedule"):
                 w2 = 1 if (s+1) in busy[t][d] else standby[(t, d, s+1)]
                 
                 if isinstance(w1, int) and isinstance(w2, int):
-                    # both teaching, trans = 0, do nothing
                     continue
                 elif isinstance(w1, int):
-                    # w1 is teaching (1), w2 is standby (var)
                     trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
                     model.Add(trans >= w1 - w2)
                     model.Add(trans >= w2 - w1)
                     transitions.append(trans)
                 elif isinstance(w2, int):
-                    # w1 is standby (var), w2 is teaching (1)
                     trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
                     model.Add(trans >= w1 - w2)
                     model.Add(trans >= w2 - w1)
                     transitions.append(trans)
                 else:
-                    # both standby (var)
                     trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
                     model.Add(trans >= w1 - w2)
                     model.Add(trans >= w2 - w1)
@@ -195,13 +190,13 @@ if st.button("Generate Schedule"):
     model.Minimize(diff * 100 + total_transitions)
     
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10.0
+    solver.parameters.max_time_in_seconds = 15.0
     status = solver.Solve(model)
     
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        st.success(f"Schedule generated! (Status: {solver.StatusName(status)})")
+        st.success(f"🎉 Schedule successfully generated! (Status: {solver.StatusName(status)})")
         
-        # Display Results
+        # Build clean dataframe of raw results
         res_data = []
         for d in range(6):
             start_op, end_op = operating_hours[d]
@@ -216,11 +211,87 @@ if st.button("Generate Schedule"):
                 })
                 
         res_df = pd.DataFrame(res_data)
-        st.subheader("Master Standby Schedule")
-        st.dataframe(res_df, use_container_width=True)
         
-        # Breakdown
-        st.subheader("Teacher Workload Breakdown")
+        # -------------------------------------------------------------
+        # BEAUTIFUL PLANNER VIEW 1: INDIVIDUAL TEACHER LOOKUP
+        # -------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("👤 Individual Teacher Week Planner")
+        st.info("Select a teacher's name to view their color-coded standby timetable.")
+        
+        sorted_teachers = sorted(teachers)
+        selected_teacher = st.selectbox("Select Teacher:", sorted_teachers)
+        
+        if selected_teacher:
+            # Generate matrix framework for a complete week view
+            all_times = sorted(res_df['Time'].unique())
+            days_order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+            planner_matrix = pd.DataFrame("", index=all_times, columns=days_order)
+            
+            for _, row in res_df.iterrows():
+                d_str = row['Day']
+                t_str = row['Time']
+                assigned_list = [name.strip() for name in row['Standby'].split(',') if name.strip()]
+                
+                if selected_teacher in assigned_list:
+                    planner_matrix.at[t_str, d_str] = "🟢 STANDBY"
+                else:
+                    planner_matrix.at[t_str, d_str] = "⚪ Free / Class"
+            
+            # Apply styling rules to the planner dataframe matrix
+            def style_cells(val):
+                if "STANDBY" in val:
+                    return 'background-color: #d4edda; color: #155724; font-weight: bold; text-align: center; border: 1px solid #c3e6cb;'
+                return 'background-color: #ffffff; color: #adb5bd; text-align: center; border: 1px solid #e9ecef;'
+                
+            styled_matrix = planner_matrix.style.applymap(style_cells)
+            st.dataframe(styled_matrix, use_container_width=True, height=550)
+
+        # -------------------------------------------------------------
+        # BEAUTIFUL PLANNER VIEW 2: MASTER COORDINATOR WEEK GRID
+        # -------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("🏛️ Master Library Week Planner Grid")
+        st.caption("A wide perspective overview of the week planner layout.")
+        
+        # Pivot structural rows into day columns
+        master_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
+        master_pivot = master_pivot.reindex(columns=days_order).fillna("")
+        
+        # Use an elegant HTML rendering framework to neatly organize lists of names vertically
+        html_table = "<table style='width:100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px;'>"
+        html_table += "<tr style='background-color: #1E3A8A; color: white; text-align: center;'>"
+        html_table += "<th style='padding: 12px; border: 1px solid #cbd5e1;'>Time Slot</th>"
+        for day in days_order:
+            html_table += f"<th style='padding: 12px; border: 1px solid #cbd5e1;'>{day}</th>"
+        html_table += "</tr>"
+        
+        for time_slot, row in master_pivot.iterrows():
+            html_table += f"<tr><td style='padding: 8px; font-weight: bold; background-color: #f1f5f9; border: 1px solid #cbd5e1; white-space: nowrap; text-align: center;'>{time_slot}</td>"
+            for day in days_order:
+                content = row[day]
+                # Reformat csv space lists into structured stacked list items
+                formatted_content = content.replace(", ", "<br>")
+                
+                if len(content) > 40:
+                    # If multiple teachers are assigned, wrap in a scroll block to maintain layout consistency
+                    cell_html = f"<div style='max-height: 75px; overflow-y: auto; padding: 2px; line-height: 1.4; font-size: 11px; color:#1e293b;'>{formatted_content}</div>"
+                elif content:
+                    cell_html = f"<div style='line-height: 1.4; color:#1e293b;'>{formatted_content}</div>"
+                else:
+                    cell_html = "<span style='color:#cbd5e1;'>—</span>"
+                    
+                html_table += f"<td style='padding: 8px; border: 1px solid #cbd5e1; vertical-align: top; background-color: #ffffff;'>{cell_html}</td>"
+            html_table += "</tr>"
+        html_table += "</table>"
+        
+        st.components.v1.html(html_table, height=750, scroller=True)
+
+        # -------------------------------------------------------------
+        # DATA METRICS BREAKDOWN & EXPORTS
+        # -------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("📊 Workload Fairness & Analytics Balance")
         breakdown = []
         for t in teachers:
             teach_hrs = total_teaching[t] / 2
@@ -234,7 +305,8 @@ if st.button("Generate Schedule"):
         b_df = pd.DataFrame(breakdown)
         st.dataframe(b_df, use_container_width=True)
         
-        csv = res_df.to_csv(index=False)
-        st.download_button(label="Download Standby CSV", data=csv, file_name="standby_schedule.csv", mime="text/csv")
+        csv_file = res_df.to_csv(index=False)
+        st.download_button(label="📥 Download Master Standby CSV File", data=csv_file, file_name="standby_schedule.csv", mime="text/csv")
+        
     else:
-        st.error("No feasible schedule found with the given constraints.")
+        st.error("No feasible schedule matching your rules could be found. Please check your data or constraint flexibility settings.")
