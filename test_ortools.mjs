@@ -1,0 +1,12 @@
+import cp from 'or-tools-wasm/cp-sat';
+console.log(cp);
+const model = new cp.CpModel();
+const x = model.newIntVar(0, 10, 'x');
+const y = model.newIntVar(0, 10, 'y');
+model.add(cp.sum([x, y]).eq(15));
+model.maximize(x);
+const solver = new cp.CpSolver();
+const status = solver.solve(model);
+console.log(status);
+console.log('x:', solver.value(x));
+console.log('y:', solver.value(y));
