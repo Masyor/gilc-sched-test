@@ -113,6 +113,7 @@ if st.button("Generate Schedule"):
     teachers = df['Teacher'].unique().tolist()
     min_standby_slots = int(min_standby_hours * 2)
     proximity_limit_slots = int(proximity_limit_hours * 2)
+    MAX_DAILY_SPAN_SLOTS = 18  # 9 hours * 2 blocks per hour
 
     operating_hours = {
         0: (14, 40), 1: (16, 40), 2: (14, 40),
@@ -139,8 +140,15 @@ if st.button("Generate Schedule"):
                     standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_{t}_{d}_{s}")
                     continue
                 
-                # Rule 2: Check proximity window constraint against all teaching classes on day 'd'
+                # Rule 2: Span and Proximity Constraints
                 if len(busy[t][d]) > 0:
+                    # Enforce New 9-Hour Rule: Max distance between any two active elements on day 'd' can't exceed 9 hours
+                    max_span_violates = any(abs((s + 1) - class_slot) > MAX_DAILY_SPAN_SLOTS or abs(s - (class_slot + 1)) > MAX_DAILY_SPAN_SLOTS for class_slot in busy[t][d])
+                    if max_span_violates:
+                        standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_span_{t}_{d}_{s}")
+                        continue
+
+                    # Proximity filter
                     min_distance_to_class = min(abs(s - class_slot) for class_slot in busy[t][d])
                     if min_distance_to_class > proximity_limit_slots:
                         standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_prox_{t}_{d}_{s}")
@@ -150,7 +158,6 @@ if st.button("Generate Schedule"):
                     standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_noclass_{t}_{d}_{s}")
                     continue
                 
-                # If it passes all bounds, it's a valid open variable slot
                 standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
                     
     for d in range(6):
@@ -348,4 +355,4 @@ if st.button("Generate Schedule"):
         st.dataframe(b_df, width='stretch')
         
     else:
-        st.error("No feasible schedule found. Try relaxing your sidebar minimum standby constraint parameters.")
+        st.error("No feasible schedule found. Adding a max 9-hour workday span constraint limits availability significantly. Try relaxing your sidebar configuration parameters.")
