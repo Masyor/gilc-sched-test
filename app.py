@@ -33,11 +33,9 @@ def get_teacher_styles(name):
     if not name or name.strip() in ["", "—"]:
         return "color: #94a3b8; font-style: italic;"
     
-    # Secure a consistent hue per unique name
     hash_digest = hashlib.md5(name.encode('utf-8')).hexdigest()
     hue = int(hash_digest[:4], 16) % 360
     
-    # Styled like refined, professional Tailwind badges (low saturation, soft background)
     bg = f"hsl({hue}, 60%, 95%)"
     text = f"hsl({hue}, 70%, 25%)"
     border = f"hsl({hue}, 50%, 85%)"
@@ -58,6 +56,12 @@ min_standby_hours = st.sidebar.slider(
     "Minimum Standby Target (Hours)", 
     min_value=0.0, max_value=10.0, value=1.0, step=0.5,
     help="Enforces that every parsed staff member receives at least this amount of total standby hours."
+)
+
+proximity_limit_hours = st.sidebar.slider(
+    "Proximity to Class Limit (Hours)", 
+    min_value=0.5, max_value=8.0, value=2.0, step=0.5,
+    help="Teachers will not be assigned a standby slot unless it falls within this number of hours of one of their teaching classes on that day."
 )
 
 st.markdown("Paste your CSV data below. Format: `Days,Time,Teacher Name`")
@@ -108,6 +112,7 @@ if st.button("Generate Schedule"):
 
     teachers = df['Teacher'].unique().tolist()
     min_standby_slots = int(min_standby_hours * 2)
+    proximity_limit_slots = int(proximity_limit_hours * 2)
 
     operating_hours = {
         0: (14, 40), 1: (16, 40), 2: (14, 40),
@@ -129,10 +134,25 @@ if st.button("Generate Schedule"):
         for d in range(6):
             start_op, end_op = operating_hours[d]
             for s in range(start_op, end_op):
+                # Rule 1: If busy teaching, standby is impossible
                 if s in busy[t][d]:
                     standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_{t}_{d}_{s}")
+                    continue
+                
+                # Rule 2: Check proximity window constraint against all teaching classes on day 'd'
+                if len(busy[t][d]) > 0:
+                    min_distance_to_class = min(abs(s - class_slot) for class_slot in busy[t][d])
+                    # If this block is too far away from any classes, force it to 0
+                    if min_distance_to_class > proximity_limit_slots:
+                        standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_prox_{t}_{d}_{s}")
+                        continue
                 else:
-                    standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
+                    # If the teacher has zero classes scheduled on this entire day, they shouldn't do standby
+                    standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_noclass_{t}_{d}_{s}")
+                    continue
+                
+                # If it passes all bounds, it's a valid open variable slot
+                standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
                     
     for d in range(6):
         start_op, end_op = operating_hours[d]
@@ -153,8 +173,10 @@ if st.button("Generate Schedule"):
                 if b1_busy or b2_busy:
                     continue
                 block_free = model.NewBoolVar(f"free_{t}_{d}_{start_s}")
-                model.Add(standby[(t, d, start_s)] + standby[(t, d, start_s + 1)] == 0).OnlyEnforceIf(block_free)
-                free_blocks.append(block_free)
+                # Enforce context only if variables exist and are active
+                if (t, d, start_s) in standby and (t, d, start_s + 1) in standby:
+                    model.Add(standby[(t, d, start_s)] + standby[(t, d, start_s + 1)] == 0).OnlyEnforceIf(block_free)
+                    free_blocks.append(block_free)
             if free_blocks:
                 model.Add(sum(free_blocks) >= 1)
                 
@@ -162,7 +184,7 @@ if st.button("Generate Schedule"):
     total_workload = {}
     for t in teachers:
         total_workload[t] = model.NewIntVar(0, 1000, f"workload_{t}")
-        sb_sum = sum(standby[(t, d, s)] for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1]))
+        sb_sum = sum(standby[(t, d, s)] for d in range(6) if (t, d, s) in standby for s in range(operating_hours[d][0], operating_hours[d][1]))
         model.Add(total_workload[t] == total_teaching_slots[t] + sb_sum)
         
     max_workload = model.NewIntVar(0, 1000, "max_workload")
@@ -176,6 +198,8 @@ if st.button("Generate Schedule"):
         for d in range(6):
             start_op, end_op = operating_hours[d]
             for s in range(start_op, end_op - 1):
+                if (t, d, s) not in standby or (t, d, s+1) not in standby:
+                    continue
                 w1 = 1 if s in busy[t][d] else standby[(t, d, s)]
                 w2 = 1 if (s+1) in busy[t][d] else standby[(t, d, s+1)]
                 if not (isinstance(w1, int) and isinstance(w2, int)):
@@ -202,7 +226,7 @@ if st.button("Generate Schedule"):
         for d in range(6):
             start_op, end_op = operating_hours[d]
             for s in range(start_op, end_op):
-                assigned = [t for t in teachers if solver.Value(standby[(t, d, s)]) == 1]
+                assigned = [t for t in teachers if (t, d, s) in standby and solver.Value(standby[(t, d, s)]) == 1]
                 time_str = f"{s//2:02d}:{(s%2)*30:02d} - {(s+1)//2:02d}:{((s+1)%2)*30:02d}"
                 day_str = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]
                 res_data.append({"Day": day_str, "Time": time_str, "Standby": ", ".join(assigned)})
@@ -255,7 +279,6 @@ if st.button("Generate Schedule"):
             
         html_output += "</tbody></table></div>"
         
-        # FIXED HERE: Changed 'scroller=True' to 'scrolling=True'
         st.components.v1.html(html_output, height=650, scrolling=True)
 
         # -------------------------------------------------------------
@@ -304,7 +327,7 @@ if st.button("Generate Schedule"):
         breakdown = []
         for t in teachers:
             teach_hrs = precise_teaching_minutes.get(t, 0) / 60.0
-            sb_hrs = sum(solver.Value(standby[(t, d, s)]) for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1])) / 2.0
+            sb_hrs = sum(solver.Value(standby[(t, d, s)]) for d in range(6) if (t, d, s) in standby for s in range(operating_hours[d][0], operating_hours[d][1])) / 2.0
             
             breakdown.append({
                 "Teacher": t,
@@ -317,4 +340,4 @@ if st.button("Generate Schedule"):
         st.dataframe(b_df, width='stretch')
         
     else:
-        st.error("No feasible schedule found. Try relaxing your sidebar minimum standby constraint parameters.")
+        st.error("No feasible schedule found. Tightening the Proximity limit restricts availability significantly (e.g. teachers with no classes on certain days cannot cover any slots). Try expanding your configuration parameters in the sidebar.")
