@@ -212,7 +212,7 @@ if st.button("Generate Schedule"):
                 
         res_df = pd.DataFrame(res_data)
         
-        # -------------------------------------------------------------
+# -------------------------------------------------------------
         # BEAUTIFUL PLANNER VIEW 1: INDIVIDUAL TEACHER LOOKUP
         # -------------------------------------------------------------
         st.markdown("---")
@@ -244,7 +244,8 @@ if st.button("Generate Schedule"):
                     return 'background-color: #d4edda; color: #155724; font-weight: bold; text-align: center; border: 1px solid #c3e6cb;'
                 return 'background-color: #ffffff; color: #adb5bd; text-align: center; border: 1px solid #e9ecef;'
                 
-            styled_matrix = planner_matrix.style.applymap(style_cells)
+            # Changed .applymap to .map here to satisfy Pandas 2.0+
+            styled_matrix = planner_matrix.style.map(style_cells)
             st.dataframe(styled_matrix, use_container_width=True, height=550)
 
         # -------------------------------------------------------------
