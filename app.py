@@ -64,6 +64,12 @@ proximity_limit_hours = st.sidebar.slider(
     help="Teachers will not be assigned a standby slot unless it falls within this number of hours of one of their teaching classes on that day."
 )
 
+max_workday_span_hours = st.sidebar.slider(
+    "Maximum Daily Work Window (Hours)",
+    min_value=4.0, max_value=14.0, value=9.0, step=0.5,
+    help="Restricts a teacher from being assigned standby slots if it extends their elapsed time at work (first block to last block) beyond this value on any given day."
+)
+
 st.markdown("Paste your CSV data below. Format: `Days,Time,Teacher Name`")
 csv_input = st.text_area("CSV Data", height=200, placeholder="Mon/Wed/Fri, 09:45-11:15, John Doe\nTue/Thu, 17:30-20:00, Jane Smith")
 
@@ -113,7 +119,7 @@ if st.button("Generate Schedule"):
     teachers = df['Teacher'].unique().tolist()
     min_standby_slots = int(min_standby_hours * 2)
     proximity_limit_slots = int(proximity_limit_hours * 2)
-    MAX_DAILY_SPAN_SLOTS = 18  # 9 hours * 2 blocks per hour
+    max_daily_span_slots = int(max_workday_span_hours * 2)
 
     operating_hours = {
         0: (14, 40), 1: (16, 40), 2: (14, 40),
@@ -142,8 +148,8 @@ if st.button("Generate Schedule"):
                 
                 # Rule 2: Span and Proximity Constraints
                 if len(busy[t][d]) > 0:
-                    # Enforce New 9-Hour Rule: Max distance between any two active elements on day 'd' can't exceed 9 hours
-                    max_span_violates = any(abs((s + 1) - class_slot) > MAX_DAILY_SPAN_SLOTS or abs(s - (class_slot + 1)) > MAX_DAILY_SPAN_SLOTS for class_slot in busy[t][d])
+                    # Enforce Workday Span Rule: Total time between first block and last block can't exceed slider limits
+                    max_span_violates = any(abs((s + 1) - class_slot) > max_daily_span_slots or abs(s - (class_slot + 1)) > max_daily_span_slots for class_slot in busy[t][d])
                     if max_span_violates:
                         standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_span_{t}_{d}_{s}")
                         continue
@@ -355,4 +361,4 @@ if st.button("Generate Schedule"):
         st.dataframe(b_df, width='stretch')
         
     else:
-        st.error("No feasible schedule found. Adding a max 9-hour workday span constraint limits availability significantly. Try relaxing your sidebar configuration parameters.")
+        st.error("No feasible schedule found. Adding a daily work window limit restricts variable combinations. Try relaxing your sidebar configuration parameters or expanding the slider values.")
