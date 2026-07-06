@@ -133,35 +133,39 @@ if st.button("Generate Schedule"):
     for t in teachers:
         for d in range(6):
             start_op, end_op = operating_hours[d]
-            for s_idx in range(start_op, end_op):
+            for s in range(start_op, end_op):
                 # Rule 1: If busy teaching, standby is impossible
-                if s_idx in busy[t][d]:
-                    standby[(t, d, s_idx)] = model.NewIntVar(0, 0, f"sb_{t}_{d}_{s_idx}")
+                if s in busy[t][d]:
+                    standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_{t}_{d}_{s}")
                     continue
                 
                 # Rule 2: Check proximity window constraint against all teaching classes on day 'd'
                 if len(busy[t][d]) > 0:
-                    min_distance_to_class = min(abs(s_idx - class_slot) for class_slot in busy[t][d])
-                    # If this block is too far away from any classes, force it to 0
+                    min_distance_to_class = min(abs(s - class_slot) for class_slot in busy[t][d])
                     if min_distance_to_class > proximity_limit_slots:
-                        standby[(t, d, s_idx)] = model.NewIntVar(0, 0, f"sb_prox_{t}_{d}_{s_idx}")
+                        standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_prox_{t}_{d}_{s}")
                         continue
                 else:
                     # If the teacher has zero classes scheduled on this entire day, they shouldn't do standby
-                    standby[(t, d, s_idx)] = model.NewIntVar(0, 0, f"sb_noclass_{t}_{d}_{s_idx}")
+                    standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_noclass_{t}_{d}_{s}")
                     continue
                 
                 # If it passes all bounds, it's a valid open variable slot
-                standby[(t, d, s_idx)] = model.NewBoolVar(f"sb_{t}_{d}_{s_idx}")
+                standby[(t, d, s)] = model.NewBoolVar(f"sb_{t}_{d}_{s}")
                     
     for d in range(6):
         start_op, end_op = operating_hours[d]
-        for s_idx in range(start_op, end_op):
-            model.Add(sum(standby[(t, d, s_idx)] for t in teachers) >= 1)
-            model.Add(sum(standby[(t, d, s_idx)] for t in teachers) <= max_staff_per_slot)
+        for s in range(start_op, end_op):
+            model.Add(sum(standby[(t, d, s)] for t in teachers) >= 1)
+            model.Add(sum(standby[(t, d, s)] for t in teachers) <= max_staff_per_slot)
             
     for t in teachers:
-        sb_sum_expr = sum(standby[(t, d, s_idx)] for d in range(6) for s_idx in range(operating_hours[d][0], operating_hours[d][1]))
+        sb_sum_expr = sum(
+            standby[(t, d, s)] 
+            for d in range(6) 
+            for s in range(operating_hours[d][0], operating_hours[d][1]) 
+            if (t, d, s) in standby
+        )
         model.Add(sb_sum_expr >= min_standby_slots)
             
     for t in teachers:
@@ -173,7 +177,6 @@ if st.button("Generate Schedule"):
                 if b1_busy or b2_busy:
                     continue
                 block_free = model.NewBoolVar(f"free_{t}_{d}_{start_s}")
-                # Enforce context only if variables exist and are active
                 if (t, d, start_s) in standby and (t, d, start_s + 1) in standby:
                     model.Add(standby[(t, d, start_s)] + standby[(t, d, start_s + 1)] == 0).OnlyEnforceIf(block_free)
                     free_blocks.append(block_free)
@@ -184,7 +187,12 @@ if st.button("Generate Schedule"):
     total_workload = {}
     for t in teachers:
         total_workload[t] = model.NewIntVar(0, 1000, f"workload_{t}")
-        sb_sum = sum(standby[(t, d, s_idx)] for d in range(6) if (t, d, s_idx) in standby for s_idx in range(operating_hours[d][0], operating_hours[d][1]))
+        sb_sum = sum(
+            standby[(t, d, s)] 
+            for d in range(6) 
+            for s in range(operating_hours[d][0], operating_hours[d][1]) 
+            if (t, d, s) in standby
+        )
         model.Add(total_workload[t] == total_teaching_slots[t] + sb_sum)
         
     max_workload = model.NewIntVar(0, 1000, "max_workload")
@@ -197,13 +205,13 @@ if st.button("Generate Schedule"):
     for t in teachers:
         for d in range(6):
             start_op, end_op = operating_hours[d]
-            for s_idx in range(start_op, end_op - 1):
-                if (t, d, s_idx) not in standby or (t, d, s_idx+1) not in standby:
+            for s in range(start_op, end_op - 1):
+                if (t, d, s) not in standby or (t, d, s+1) not in standby:
                     continue
-                w1 = 1 if s_idx in busy[t][d] else standby[(t, d, s_idx)]
-                w2 = 1 if (s_idx+1) in busy[t][d] else standby[(t, d, s_idx+1)]
+                w1 = 1 if s in busy[t][d] else standby[(t, d, s)]
+                w2 = 1 if (s+1) in busy[t][d] else standby[(t, d, s+1)]
                 if not (isinstance(w1, int) and isinstance(w2, int)):
-                    trans = model.NewBoolVar(f"trans_{t}_{d}_{s_idx}")
+                    trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
                     model.Add(trans >= w1 - w2)
                     model.Add(trans >= w2 - w1)
                     transitions.append(trans)
@@ -225,9 +233,9 @@ if st.button("Generate Schedule"):
         res_data = []
         for d in range(6):
             start_op, end_op = operating_hours[d]
-            for s_idx in range(start_op, end_op):
-                assigned = [t for t in teachers if (t, d, s_idx) in standby and solver.Value(standby[(t, d, s_idx)]) == 1]
-                time_str = f"{s_idx//2:02d}:{(s_idx%2)*30:02d} - {(s_idx+1)//2:02d}:{((s_idx+1)%2)*30:02d}"
+            for s in range(start_op, end_op):
+                assigned = [t for t in teachers if (t, d, s) in standby and solver.Value(standby[(t, d, s)]) == 1]
+                time_str = f"{s//2:02d}:{(s%2)*30:02d} - {(s+1)//2:02d}:{((s+1)%2)*30:02d}"
                 day_str = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]
                 res_data.append({"Day": day_str, "Time": time_str, "Standby": ", ".join(assigned)})
                 
@@ -327,7 +335,7 @@ if st.button("Generate Schedule"):
         breakdown = []
         for t in teachers:
             teach_hrs = precise_teaching_minutes.get(t, 0) / 60.0
-            sb_hrs = sum(solver.Value(standby[(t, d, s_idx)]) for d in range(6) if (t, d, s_idx) in standby for s_idx in range(operating_hours[d][0], operating_hours[d][1])) / 2.0
+            sb_hrs = sum(solver.Value(standby[(t, d, s)]) for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1]) if (t, d, s) in standby) / 2.0
             
             breakdown.append({
                 "Teacher": t,
