@@ -18,7 +18,7 @@ def get_busy_slots(start_str, end_str):
         slot_start = s * 30
         slot_end = slot_start + 30
         
-        # Overlap condition:
+        # Overlap condition to prevent scheduling conflicts
         if max(start_time_mins, slot_start) < min(end_time_mins, slot_end):
             busy_slots.append(s)
             
@@ -51,6 +51,9 @@ if st.button("Generate Schedule"):
         st.error("Please provide CSV data.")
         st.stop()
         
+    # Dictionary to keep track of precise teaching minutes directly from strings
+    precise_teaching_minutes = {}
+    
     try:
         data = []
         for line in csv_input.strip().split('\n'):
@@ -65,9 +68,21 @@ if st.button("Generate Schedule"):
                     continue
                 
                 start_str, end_str = times.split('-')
+                
+                # Calculate precise absolute minutes for exact metrics tracking
+                sh, sm = map(int, start_str.strip().split(':'))
+                eh, em = map(int, end_str.strip().split(':'))
+                duration_mins = (eh * 60 + em) - (sh * 60 + sm)
+                
+                parsed_days_list = parse_days(days)
                 slots = get_busy_slots(start_str, end_str)
                 
-                for day in parse_days(days):
+                # Add exact minutes to tracking dictionary for every active day
+                if name not in precise_teaching_minutes:
+                    precise_teaching_minutes[name] = 0
+                precise_teaching_minutes[name] += duration_mins * len(parsed_days_list)
+                
+                for day in parsed_days_list:
                     for s in slots:
                         data.append({
                             'Teacher': name,
@@ -119,9 +134,7 @@ if st.button("Generate Schedule"):
     for d in range(6):
         start_op, end_op = operating_hours[d]
         for s in range(start_op, end_op):
-            # Must have at least 1 person assigned
             model.Add(sum(standby[(t, d, s)] for t in teachers) >= 1)
-            # Cannot exceed user-configured maximum number of personnel
             model.Add(sum(standby[(t, d, s)] for t in teachers) <= max_staff_per_slot)
             
     # 3. 1-Hour Consecutive Free Time (11:00 to 14:00 -> slots 22 to 28)
@@ -142,13 +155,14 @@ if st.button("Generate Schedule"):
             else:
                 model.Add(sum(free_blocks) >= 1)
                 
-    # 4. Total Effort Balancing
-    total_teaching = {t: sum(len(busy[t][d]) for d in range(6)) for t in teachers}
+    # 4. Total Effort Balancing (Note: The solver optimization model continues using 
+    # slot counts internally for constraints math to keep variables as linear integers)
+    total_teaching_slots = {t: sum(len(busy[t][d]) for d in range(6)) for t in teachers}
     total_workload = {}
     for t in teachers:
         total_workload[t] = model.NewIntVar(0, 1000, f"workload_{t}")
         sb_sum = sum(standby[(t, d, s)] for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1]))
-        model.Add(total_workload[t] == total_teaching[t] + sb_sum)
+        model.Add(total_workload[t] == total_teaching_slots[t] + sb_sum)
         
     max_workload = model.NewIntVar(0, 1000, "max_workload")
     min_workload = model.NewIntVar(0, 1000, "min_workload")
@@ -212,11 +226,9 @@ if st.button("Generate Schedule"):
         st.subheader("🗓️ Master Weekly Standby Planner Grid")
         st.info(f"Below is the complete weekly view organized by time slots. (Max limit applied: {max_staff_per_slot} teachers per slot)")
 
-        # Pivot to create a structure where Time is Rows and Days are Columns
         planner_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
         planner_pivot = planner_pivot.reindex(columns=days_order).fillna("")
 
-        # Custom cell text coloration styles
         def format_planner_cells(val):
             if val.strip() == "" or val.strip() == "—":
                 return 'background-color: #f8f9fa; color: #cbd5e1; text-align: center; font-style: italic; border: 1px solid #e2e8f0;'
@@ -226,7 +238,6 @@ if st.button("Generate Schedule"):
         for col in display_pivot.columns:
             display_pivot[col] = display_pivot[col].apply(lambda x: "—" if not str(x).strip() else x)
 
-        # Render layout updating deprecated 'use_container_width' parameters to modern specifications
         styled_planner = display_pivot.style.map(format_planner_cells)
         st.dataframe(styled_planner, width='stretch', height=750)
 
@@ -235,19 +246,22 @@ if st.button("Generate Schedule"):
         # -------------------------------------------------------------
         st.markdown("---")
         st.subheader("📊 Workload Fairness & Balance Breakdown")
+        
         breakdown = []
         for t in teachers:
-            teach_hrs = total_teaching[t] / 2
-            sb_hrs = sum(solver.Value(standby[(t, d, s)]) for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1])) / 2
+            # Retrieve exact parsed teaching hours
+            teach_hrs = precise_teaching_minutes.get(t, 0) / 60.0
+            # Calculate standby hours from active assignments
+            sb_hrs = sum(solver.Value(standby[(t, d, s)]) for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1])) / 2.0
+            
             breakdown.append({
                 "Teacher": t,
-                "Teaching (hrs)": teach_hrs,
-                "Standby (hrs)": sb_hrs,
-                "Total Workload (hrs)": teach_hrs + sb_hrs
+                "Teaching (hrs)": round(teach_hrs, 2),
+                "Standby (hrs)": round(sb_hrs, 1),
+                "Total Workload (hrs)": round(teach_hrs + sb_hrs, 2)
             })
+            
         b_df = pd.DataFrame(breakdown).sort_values(by="Teacher")
-        
-        # Fixed crash by removing the invalid 'index=False' argument
         st.dataframe(b_df, width='stretch')
         
         csv_file = res_df.to_csv(index=False)
