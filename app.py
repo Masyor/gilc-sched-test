@@ -84,7 +84,6 @@ if st.button("Generate Schedule"):
     }
     
     # Build teacher busy matrix
-    # busy[t][d][s] = True if teacher t is teaching on day d at slot s
     busy = {t: {d: set() for d in range(6)} for t in teachers}
     for _, row in df.iterrows():
         t = row['Teacher']
@@ -101,7 +100,6 @@ if st.button("Generate Schedule"):
         for d in range(6):
             start_op, end_op = operating_hours[d]
             for s in range(start_op, end_op):
-                # If teaching, cannot do standby
                 if s in busy[t][d]:
                     standby[(t, d, s)] = model.NewIntVar(0, 0, f"sb_{t}_{d}_{s}")
                 else:
@@ -114,24 +112,19 @@ if st.button("Generate Schedule"):
             model.Add(sum(standby[(t, d, s)] for t in teachers) >= 1)
             
     # 3. 1-Hour Consecutive Free Time (11:00 to 14:00 -> slots 22 to 28)
-    # 2 consecutive 30-min slots completely free (no teach, no standby)
     for t in teachers:
         for d in range(6):
             free_blocks = []
-            for start_s in range(22, 27): # starts at 22, 23, 24, 25, 26
-                # a block is free if not busy and not on standby for start_s and start_s + 1
+            for start_s in range(22, 27):
                 b1_busy = start_s in busy[t][d]
                 b2_busy = (start_s + 1) in busy[t][d]
                 if b1_busy or b2_busy:
                     continue
-                # block is free if both standbys are 0
                 block_free = model.NewBoolVar(f"free_{t}_{d}_{start_s}")
-                # block_free == 1 => standby1 == 0 and standby2 == 0
                 model.Add(standby[(t, d, start_s)] + standby[(t, d, start_s + 1)] == 0).OnlyEnforceIf(block_free)
                 free_blocks.append(block_free)
             
             if not free_blocks:
-                # Impossible constraint! Teacher is teaching too much during 11-14
                 pass
             else:
                 model.Add(sum(free_blocks) >= 1)
@@ -141,19 +134,15 @@ if st.button("Generate Schedule"):
     total_workload = {}
     for t in teachers:
         total_workload[t] = model.NewIntVar(0, 1000, f"workload_{t}")
-        # Workload = teaching + standby
         sb_sum = sum(standby[(t, d, s)] for d in range(6) for s in range(operating_hours[d][0], operating_hours[d][1]))
         model.Add(total_workload[t] == total_teaching[t] + sb_sum)
         
-    # Minimize max workload to balance
     max_workload = model.NewIntVar(0, 1000, "max_workload")
     min_workload = model.NewIntVar(0, 1000, "min_workload")
     for t in teachers:
         model.Add(max_workload >= total_workload[t])
         model.Add(min_workload <= total_workload[t])
         
-    # Minimize (max_workload - min_workload)
-    
     # 5. Penalize fragmented shifts
     transitions = []
     for t in teachers:
@@ -165,16 +154,6 @@ if st.button("Generate Schedule"):
                 
                 if isinstance(w1, int) and isinstance(w2, int):
                     continue
-                elif isinstance(w1, int):
-                    trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
-                    model.Add(trans >= w1 - w2)
-                    model.Add(trans >= w2 - w1)
-                    transitions.append(trans)
-                elif isinstance(w2, int):
-                    trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
-                    model.Add(trans >= w1 - w2)
-                    model.Add(trans >= w2 - w1)
-                    transitions.append(trans)
                 else:
                     trans = model.NewBoolVar(f"trans_{t}_{d}_{s}")
                     model.Add(trans >= w1 - w2)
@@ -196,7 +175,7 @@ if st.button("Generate Schedule"):
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         st.success(f"🎉 Schedule successfully generated! (Status: {solver.StatusName(status)})")
         
-        # Build clean dataframe of raw results
+        # Parse linear records
         res_data = []
         for d in range(6):
             start_op, end_op = operating_hours[d]
@@ -211,88 +190,39 @@ if st.button("Generate Schedule"):
                 })
                 
         res_df = pd.DataFrame(res_data)
-        
-# -------------------------------------------------------------
-        # BEAUTIFUL PLANNER VIEW 1: INDIVIDUAL TEACHER LOOKUP
-        # -------------------------------------------------------------
-        st.markdown("---")
-        st.subheader("👤 Individual Teacher Week Planner")
-        st.info("Select a teacher's name to view their color-coded standby timetable.")
-        
-        sorted_teachers = sorted(teachers)
-        selected_teacher = st.selectbox("Select Teacher:", sorted_teachers)
-        
-        if selected_teacher:
-            # Generate matrix framework for a complete week view
-            all_times = sorted(res_df['Time'].unique())
-            days_order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-            planner_matrix = pd.DataFrame("", index=all_times, columns=days_order)
-            
-            for _, row in res_df.iterrows():
-                d_str = row['Day']
-                t_str = row['Time']
-                assigned_list = [name.strip() for name in row['Standby'].split(',') if name.strip()]
-                
-                if selected_teacher in assigned_list:
-                    planner_matrix.at[t_str, d_str] = "🟢 STANDBY"
-                else:
-                    planner_matrix.at[t_str, d_str] = "⚪ Free / Class"
-            
-            # Apply styling rules to the planner dataframe matrix
-            def style_cells(val):
-                if "STANDBY" in val:
-                    return 'background-color: #d4edda; color: #155724; font-weight: bold; text-align: center; border: 1px solid #c3e6cb;'
-                return 'background-color: #ffffff; color: #adb5bd; text-align: center; border: 1px solid #e9ecef;'
-                
-            # Changed .applymap to .map here to satisfy Pandas 2.0+
-            styled_matrix = planner_matrix.style.map(style_cells)
-            st.dataframe(styled_matrix, use_container_width=True, height=550)
+        days_order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
         # -------------------------------------------------------------
-        # BEAUTIFUL PLANNER VIEW 2: MASTER COORDINATOR WEEK GRID
+        # THE VISUAL WHOLE WEEK PLANNER MATRIX
         # -------------------------------------------------------------
         st.markdown("---")
-        st.subheader("🏛️ Master Library Week Planner Grid")
-        st.caption("A wide perspective overview of the week planner layout.")
-        
-        # Pivot structural rows into day columns
-        master_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
-        master_pivot = master_pivot.reindex(columns=days_order).fillna("")
-        
-        # Use an elegant HTML rendering framework to neatly organize lists of names vertically
-        html_table = "<table style='width:100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px;'>"
-        html_table += "<tr style='background-color: #1E3A8A; color: white; text-align: center;'>"
-        html_table += "<th style='padding: 12px; border: 1px solid #cbd5e1;'>Time Slot</th>"
-        for day in days_order:
-            html_table += f"<th style='padding: 12px; border: 1px solid #cbd5e1;'>{day}</th>"
-        html_table += "</tr>"
-        
-        for time_slot, row in master_pivot.iterrows():
-            html_table += f"<tr><td style='padding: 8px; font-weight: bold; background-color: #f1f5f9; border: 1px solid #cbd5e1; white-space: nowrap; text-align: center;'>{time_slot}</td>"
-            for day in days_order:
-                content = row[day]
-                # Reformat csv space lists into structured stacked list items
-                formatted_content = content.replace(", ", "<br>")
-                
-                if len(content) > 40:
-                    # If multiple teachers are assigned, wrap in a scroll block to maintain layout consistency
-                    cell_html = f"<div style='max-height: 75px; overflow-y: auto; padding: 2px; line-height: 1.4; font-size: 11px; color:#1e293b;'>{formatted_content}</div>"
-                elif content:
-                    cell_html = f"<div style='line-height: 1.4; color:#1e293b;'>{formatted_content}</div>"
-                else:
-                    cell_html = "<span style='color:#cbd5e1;'>—</span>"
-                    
-                html_table += f"<td style='padding: 8px; border: 1px solid #cbd5e1; vertical-align: top; background-color: #ffffff;'>{cell_html}</td>"
-            html_table += "</tr>"
-        html_table += "</table>"
-        
-        st.components.v1.html(html_table, height=750, scroller=True)
+        st.subheader("🗓️ Master Weekly Standby Planner Grid")
+        st.info("Below is the complete weekly view organized by time slots and days.")
+
+        # Pivot to create a structure where Time is Rows and Days are Columns
+        planner_pivot = res_df.pivot(index='Time', columns='Day', values='Standby').fillna("")
+        planner_pivot = planner_pivot.reindex(columns=days_order).fillna("")
+
+        # Create custom styled dataframe representation with interactive cell alignment
+        def format_planner_cells(val):
+            if val.strip() == "" or val.strip() == "—":
+                return 'background-color: #f8f9fa; color: #cbd5e1; text-align: center; font-style: italic; border: 1px solid #e2e8f0;'
+            return 'background-color: #f0fdf4; color: #166534; font-size: 13px; font-weight: 500; text-align: left; vertical-align: top; border: 1px solid #bbf7d0; padding: 6px;'
+
+        # Replace missing cells with standard empty dashes for clean visual alignment
+        display_pivot = planner_pivot.copy()
+        for col in display_pivot.columns:
+            display_pivot[col] = display_pivot[col].apply(lambda x: "—" if not str(x).strip() else x)
+
+        # Render using the modern Pandas map functionality (satisfying pandas 2.0+)
+        styled_planner = display_pivot.style.map(format_planner_cells)
+        st.dataframe(styled_planner, use_container_width=True, height=750)
 
         # -------------------------------------------------------------
         # DATA METRICS BREAKDOWN & EXPORTS
         # -------------------------------------------------------------
         st.markdown("---")
-        st.subheader("📊 Workload Fairness & Analytics Balance")
+        st.subheader("📊 Workload Fairness & Balance Breakdown")
         breakdown = []
         for t in teachers:
             teach_hrs = total_teaching[t] / 2
@@ -303,8 +233,8 @@ if st.button("Generate Schedule"):
                 "Standby (hrs)": sb_hrs,
                 "Total Workload (hrs)": teach_hrs + sb_hrs
             })
-        b_df = pd.DataFrame(breakdown)
-        st.dataframe(b_df, use_container_width=True)
+        b_df = pd.DataFrame(breakdown).sort_values(by="Teacher")
+        st.dataframe(b_df, use_container_width=True, index=False)
         
         csv_file = res_df.to_csv(index=False)
         st.download_button(label="📥 Download Master Standby CSV File", data=csv_file, file_name="standby_schedule.csv", mime="text/csv")
