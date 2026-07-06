@@ -245,7 +245,6 @@ if st.button("Generate Schedule"):
                 if not cell_value.strip():
                     html_output += '<div style="color: #94a3b8; text-align: center; font-style: italic; padding-top: 4px;">—</div>'
                 else:
-                    # Break names and style each individual name dynamically by name hash
                     individual_names = [n.strip() for n in cell_value.split(",") if n.strip()]
                     for name in individual_names:
                         style_rule = get_teacher_styles(name)
@@ -256,8 +255,8 @@ if st.button("Generate Schedule"):
             
         html_output += "</tbody></table></div>"
         
-        # Render the custom beautifully formatted blueprint planner component
-        st.components.v1.html(html_output, height=650, scroller=True)
+        # FIXED HERE: Changed 'scroller=True' to 'scrolling=True'
+        st.components.v1.html(html_output, height=650, scrolling=True)
 
         # -------------------------------------------------------------
         # EXPORTS AND ACTIONS
@@ -277,7 +276,6 @@ if st.button("Generate Schedule"):
             <script>
             function printPlanner() {{
                 var printWindow = window.open('', '_blank');
-                // Target layout structural container directly
                 var gridContent = window.parent.document.getElementById("printable-planner") || window.parent.document.querySelector('iframe').contentDocument.getElementById("printable-planner");
                 
                 var payloadHtml = gridContent ? gridContent.outerHTML : `{html_output}`;
